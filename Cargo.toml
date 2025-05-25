@@ -1,6 +1,6 @@
 [package]
 name = "fw16-pong-wars"
-version = "0.1.0"
+version = "1.0.1"
 edition = "2021"
 
 [dependencies]
@@ -8,11 +8,18 @@ serialport = "4.2"
 anyhow = "1.0"
 rand = "0.8"
 tray-icon = "0.11"
+crossterm = "0.27"
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
+codegen-units = 1
 strip = true
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = 3
+codegen-units = 1
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

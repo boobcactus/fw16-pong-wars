@@ -3,7 +3,8 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
     TrayIcon, TrayIconBuilder,
 };
-use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub enum TrayCommand {
     Exit,
@@ -11,14 +12,11 @@ pub enum TrayCommand {
 
 pub struct SystemTray {
     _tray_icon: TrayIcon,
-    rx: Receiver<TrayCommand>,
+    exit_flag: Arc<AtomicBool>,
 }
 
 impl SystemTray {
-    pub fn new() -> Result<Self> {
-        // Create a channel for communication
-        let (tx, rx) = mpsc::channel();
-
+    pub fn new(exit_flag: Arc<AtomicBool>) -> Result<Self> {
         // Create menu items
         let quit_item = MenuItem::new("Exit", true, None);
         let quit_id = quit_item.id().clone();
@@ -38,13 +36,13 @@ impl SystemTray {
             .build()?;
 
         // Spawn a thread to handle menu events
-        let tx_clone = tx.clone();
+        let exit_flag_clone = exit_flag.clone();
         std::thread::spawn(move || {
             let menu_channel = MenuEvent::receiver();
             loop {
                 if let Ok(event) = menu_channel.recv() {
                     if event.id == quit_id {
-                        let _ = tx_clone.send(TrayCommand::Exit);
+                        exit_flag_clone.store(true, Ordering::Relaxed);
                         break;
                     }
                 }
@@ -53,11 +51,15 @@ impl SystemTray {
 
         Ok(SystemTray {
             _tray_icon: tray_icon,
-            rx,
+            exit_flag,
         })
     }
 
     pub fn check_commands(&self) -> Option<TrayCommand> {
-        self.rx.try_recv().ok()
+        if self.exit_flag.load(Ordering::Relaxed) {
+            Some(TrayCommand::Exit)
+        } else {
+            None
+        }
     }
 }

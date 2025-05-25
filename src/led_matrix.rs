@@ -6,18 +6,24 @@ use std::thread;
 use crate::game::{GameState, SquareColor, GRID_HEIGHT, GRID_WIDTH};
 
 const BAUD_RATE: u32 = 115200;
-const TIMEOUT_MS: u64 = 5000; // Increased timeout to 5 seconds
+const TIMEOUT_MS: u64 = 5000;
 
 // Framework LED Matrix Protocol Constants
 const MAGIC_WORD: [u8; 2] = [0x32, 0xAC];
 
-// Command IDs from commands.md
+// Command IDs
 const CMD_BRIGHTNESS: u8 = 0x00;
 const CMD_STAGE_GREY_COL: u8 = 0x07;
 const CMD_DRAW_GREY_BUFFER: u8 = 0x08;
 
+// Pre-calculated buffer sizes
+const COLUMN_DATA_SIZE: usize = 4 + GRID_HEIGHT; // Magic(2) + Cmd(1) + ColIdx(1) + Data(34)
+const COMMIT_CMD_SIZE: usize = 4; // Magic(2) + Cmd(1) + Unused(1)
+
 pub struct LedMatrix {
     port: Box<dyn SerialPort>,
+    column_buffer: Vec<u8>, // Pre-allocated buffer for column data
+    commit_buffer: [u8; COMMIT_CMD_SIZE], // Static buffer for commit command
 }
 
 impl LedMatrix {
@@ -75,8 +81,6 @@ impl LedMatrix {
             .iter()
             .find(|p| {
                 if let serialport::SerialPortType::UsbPort(info) = &p.port_type {
-                    // Framework Computer vendor ID is 0x32AC
-                    // LED Matrix product ID is typically 0x0020 or 0x0021
                     info.vid == 0x32AC && (info.pid == 0x0020 || info.pid == 0x0021)
                 } else {
                     false
@@ -100,91 +104,89 @@ impl LedMatrix {
         // Small delay to let the device settle
         thread::sleep(Duration::from_millis(100));
         
-        Ok(LedMatrix { port: Box::from(port) })
-    }
-    
-    pub fn init_display(&mut self) -> Result<()> {
-        // Send initialization sequence
-        // Clear display first
-        self.clear_display()?;
+        // Pre-allocate buffers
+        let mut column_buffer = Vec::with_capacity(COLUMN_DATA_SIZE);
+        column_buffer.extend_from_slice(&MAGIC_WORD);
+        column_buffer.push(CMD_STAGE_GREY_COL);
+        column_buffer.push(0); // Column index placeholder
+        column_buffer.resize(COLUMN_DATA_SIZE, 0); // Fill with zeros
         
-        // Set brightness to medium
-        self.set_brightness(128)?;
-        
-        Ok(())
-    }
-    
-    fn clear_display(&mut self) -> Result<()> {
-        // Send all columns with brightness 0
-        for x in 0..9 {
-            let mut column_data = vec![
-                MAGIC_WORD[0], MAGIC_WORD[1],
-                CMD_STAGE_GREY_COL,
-                x as u8,
-            ];
-            
-            // Add 34 zeros for this column
-            column_data.extend(vec![0u8; 34]);
-            
-            self.port.write_all(&column_data)?;
-            self.port.flush()?;
-            
-            // Small delay between columns to avoid overwhelming the device
-            thread::sleep(Duration::from_millis(5));
-        }
-        
-        // Commit to display
-        let commit_command = vec![
-            MAGIC_WORD[0], MAGIC_WORD[1],
+        let commit_buffer = [
+            MAGIC_WORD[0], 
+            MAGIC_WORD[1],
             CMD_DRAW_GREY_BUFFER,
             0x00,
         ];
         
-        self.port.write_all(&commit_command)?;
+        Ok(LedMatrix { 
+            port: Box::from(port),
+            column_buffer,
+            commit_buffer,
+        })
+    }
+    
+    pub fn init_display(&mut self) -> Result<()> {
+        // Send initialization sequence
+        self.clear_display()?;
+        self.set_brightness(128)?;
+        Ok(())
+    }
+    
+    #[inline]
+    fn clear_display(&mut self) -> Result<()> {
+        // Use pre-allocated buffer
+        self.column_buffer[3] = 0; // Start with column 0
+        
+        // Clear all brightness values
+        for i in 4..COLUMN_DATA_SIZE {
+            self.column_buffer[i] = 0;
+        }
+        
+        // Send all columns with brightness 0
+        for x in 0..9 {
+            self.column_buffer[3] = x as u8;
+            self.port.write_all(&self.column_buffer)?;
+        }
+        
         self.port.flush()?;
         
-        // Wait for display to update
-        thread::sleep(Duration::from_millis(50));
+        // Commit to display
+        self.port.write_all(&self.commit_buffer)?;
+        self.port.flush()?;
         
         Ok(())
     }
     
+    #[inline]
     fn set_brightness(&mut self, brightness: u8) -> Result<()> {
         // Command: Set brightness (0-255)
-        let command = vec![
-            MAGIC_WORD[0], MAGIC_WORD[1],
+        const BRIGHTNESS_CMD: [u8; 4] = [
+            MAGIC_WORD[0], 
+            MAGIC_WORD[1],
             CMD_BRIGHTNESS,
-            brightness,
+            0, // Brightness placeholder
         ];
         
-        self.port.write_all(&command)?;
-        self.port.flush()?;
+        let mut cmd = BRIGHTNESS_CMD;
+        cmd[3] = brightness;
         
-        // Small delay to let command process
-        thread::sleep(Duration::from_millis(10));
+        self.port.write_all(&cmd)?;
+        self.port.flush()?;
         
         Ok(())
     }
     
+    #[inline]
     pub fn render(&mut self, game_state: &GameState) -> Result<()> {
         // Send each column of grayscale data
         for x in 0..GRID_WIDTH {
-            let mut column_data = vec![
-                MAGIC_WORD[0], MAGIC_WORD[1],
-                CMD_STAGE_GREY_COL,
-                x as u8,  // Column index
-            ];
+            self.column_buffer[3] = x as u8;  // Column index
             
             // Add 34 brightness values for this column
             for y in 0..GRID_HEIGHT {
                 // Check if ball is at this position
-                let mut has_ball = false;
-                for ball in &game_state.balls {
-                    if (ball.x as usize == x) && (ball.y as usize == y) {
-                        has_ball = true;
-                        break;
-                    }
-                }
+                let has_ball = game_state.balls.iter()
+                    .any(|ball| (ball.x as usize == x) && (ball.y as usize == y));
                 
                 let brightness = if has_ball {
                     // Ball brightness depends on the square it's on
@@ -194,30 +196,23 @@ impl LedMatrix {
                     }
                 } else {
                     match game_state.squares[x][y] {
-                        SquareColor::Day => 200,    // Bright for day
-                        SquareColor::Night => 0,     // Off for night
+                        SquareColor::Day => 255,    // Full bright for day (white)
+                        SquareColor::Night => 0,     // Full off for night (black)
                     }
                 };
                 
-                column_data.push(brightness);
+                self.column_buffer[4 + y] = brightness;
             }
             
             // Send this column
-            self.port.write_all(&column_data)?;
-            self.port.flush()?;
-            
-            // Small delay between columns
-            thread::sleep(Duration::from_millis(2));
+            self.port.write_all(&self.column_buffer)?;
         }
         
-        // Commit all columns to display
-        let commit_command = vec![
-            MAGIC_WORD[0], MAGIC_WORD[1],
-            CMD_DRAW_GREY_BUFFER,
-            0x00,  // Unused parameter
-        ];
+        // Flush once after all columns
+        self.port.flush()?;
         
-        self.port.write_all(&commit_command)?;
+        // Commit all columns to display
+        self.port.write_all(&self.commit_buffer)?;
         self.port.flush()?;
         
         Ok(())
