@@ -19,8 +19,8 @@ cargo run --release -- [FLAGS]
 Flags
 
 - `-d`, `--dualmode`  Drive two modules side-by-side (18x34)
-- `-s`, `--speed <1-64>`  Target FPS (default 32)
-    - Supports up to 124 FPS with current baud rate, but may lead to instability in the EC.
+- `-s`, `--speed <1-64>`  Target FPS (default 64)
+    - Supports up to 124 FPS by editing [this value](https://github.com/boobcactus/fw16-pong-wars/blob/b246b33519e5e006077fbc7d48cc27122e02981f/src/main.rs#L21), but may lead to instability in the EC.
 - `-b`, `--brightness <0-100>`  Brightness percent (default 50)
 - `--debug`  Extra timing/log output
 
