@@ -17,7 +17,8 @@ cargo run --release -- [FLAGS]
 Flags
 
 - `-d`, `--dualmode`  Drive two modules side-by-side (18x34)
-- `-s`, `--speed <1-120>`  Target FPS (default 32). 120 is the observed limit of the LED matrix, but a higher BAUD_RATE does allow higher FPS limits to be set.
+- `-s`, `--speed <1-64>`  Target FPS (default 32)
+    - Supports up to 124 FPS with current baud rate, but may lead to instability in the EC.
 - `-b`, `--brightness <0-100>`  Brightness percent (default 50)
 - `--debug`  Extra timing/log output
 

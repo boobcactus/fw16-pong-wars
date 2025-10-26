@@ -17,8 +17,8 @@ struct Args {
     #[arg(short = 'd', long = "dualmode")]
     dual_mode: bool,
 
-    /// Frames per second target (1-120 fps)
-    #[arg(short = 's', long = "speed", default_value_t = 32, value_parser = clap::value_parser!(u8).range(1..=120))]
+    /// Frames per second target (1-64 fps)
+    #[arg(short = 's', long = "speed", default_value_t = 32, value_parser = clap::value_parser!(u8).range(1..=64))]
     speed: u8,
 
     /// Brightness percentage (0-100)
