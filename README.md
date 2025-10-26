@@ -1,11 +1,13 @@
-# FW16 Pong Wars
+   # FW16 Pong Wars
 
 A Rust app that plays Pong Wars on the Framework Laptop 16 LED Matrix over USB serial.
 
+https://github.com/user-attachments/assets/2d7a4b85-f580-4dbc-9378-3473213b643f
+
 ## Requirements
 
-- At least one Framework LED Matrix Input Module
-- Optional second module for dual-mode (-d, --dualmode)
+- At least one [Framework Laptop 16 LED Matrix](https://frame.work/products/16-led-matrix)
+- Optional second LED Matrix for dual-mode (-d, --dualmode)
 - Rust toolchain (stable cargo + rustc)
 
 ## Run
@@ -45,3 +47,4 @@ MIT License
 
 - Original Pong Wars by Koen van Gilst: https://github.com/vnglst/pong-wars
 - Framework Computer for the LED Matrix hardware and open-source firmware
+- Windsurf and OpenAI's GPT-5 enabling me to bring this idea to life  
