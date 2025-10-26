@@ -1,20 +1,10 @@
 use rand::Rng;
 
-pub const GRID_WIDTH: usize = 9;
-pub const GRID_HEIGHT: usize = 34;
-pub const TOTAL_SQUARES: usize = GRID_WIDTH * GRID_HEIGHT;
+pub const DEFAULT_GRID_HEIGHT: usize = 34;
 
 const MIN_SPEED: f32 = 0.2;
 const MAX_SPEED: f32 = 0.5;
-const SPEED_RANDOMNESS: f32 = 0.01;
-
-// Pre-calculated constants
-const GRID_WIDTH_F32: f32 = GRID_WIDTH as f32;
-const GRID_HEIGHT_F32: f32 = GRID_HEIGHT as f32;
-const HALF_GRID_HEIGHT: usize = GRID_HEIGHT / 2;
-const GRID_HEIGHT_QUARTER: f32 = GRID_HEIGHT_F32 / 4.0;
-const GRID_HEIGHT_THREE_QUARTERS: f32 = (GRID_HEIGHT_F32 * 3.0) / 4.0;
-const GRID_WIDTH_HALF: f32 = GRID_WIDTH_F32 / 2.0;
+const SPEED_RANDOMNESS: f32 = 0.001;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SquareColor {
@@ -34,135 +24,224 @@ pub struct Ball {
 impl Ball {
     #[inline]
     fn new(x: f32, y: f32, dx: f32, dy: f32, color_type: SquareColor) -> Self {
-        Ball { x, y, dx, dy, color_type }
-    }
-    
-    #[inline]
-    fn update(&mut self, squares: &mut [[SquareColor; GRID_HEIGHT]; GRID_WIDTH], rng: &mut impl Rng) {
-        // Check boundary collisions
-        if self.x + self.dx >= GRID_WIDTH_F32 - 0.5 || self.x + self.dx < 0.5 {
-            self.dx = -self.dx;
-        }
-        if self.y + self.dy >= GRID_HEIGHT_F32 - 0.5 || self.y + self.dy < 0.5 {
-            self.dy = -self.dy;
-        }
-        
-        // Check square collisions using static array
-        const CHECK_OFFSETS: [(f32, f32); 4] = [(0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)];
-        
-        for &(offset_x, offset_y) in &CHECK_OFFSETS {
-            let check_x = self.x + offset_x;
-            let check_y = self.y + offset_y;
-            let grid_x = check_x as usize;
-            let grid_y = check_y as usize;
-            
-            if grid_x < GRID_WIDTH && grid_y < GRID_HEIGHT {
-                if squares[grid_x][grid_y] != self.color_type {
-                    // Hit a square of opposite color
-                    squares[grid_x][grid_y] = self.color_type;
-                    
-                    // Bounce
-                    if offset_x.abs() > offset_y.abs() {
-                        self.dx = -self.dx;
-                    } else {
-                        self.dy = -self.dy;
-                    }
-                }
-            }
-        }
-        
-        // Update position
-        self.x += self.dx;
-        self.y += self.dy;
-        
-        // Add randomness
-        self.dx += rng.gen_range(-SPEED_RANDOMNESS..SPEED_RANDOMNESS);
-        self.dy += rng.gen_range(-SPEED_RANDOMNESS..SPEED_RANDOMNESS);
-        
-        // Clamp speed
-        self.dx = self.dx.clamp(-MAX_SPEED, MAX_SPEED);
-        self.dy = self.dy.clamp(-MAX_SPEED, MAX_SPEED);
-        
-        // Ensure minimum speed
-        if self.dx.abs() < MIN_SPEED {
-            self.dx = if self.dx > 0.0 { MIN_SPEED } else { -MIN_SPEED };
-        }
-        if self.dy.abs() < MIN_SPEED {
-            self.dy = if self.dy > 0.0 { MIN_SPEED } else { -MIN_SPEED };
+        Ball {
+            x,
+            y,
+            dx,
+            dy,
+            color_type,
         }
     }
 }
 
-#[derive(Clone)]
 pub struct GameState {
-    pub squares: [[SquareColor; GRID_HEIGHT]; GRID_WIDTH],
-    pub balls: [Ball; 2], // Fixed size array for 2 balls
+    width: usize,
+    height: usize,
+    width_f32: f32,
+    height_f32: f32,
+    pub squares: Vec<Vec<SquareColor>>,
+    pub balls: [Ball; 2],
     pub day_score: usize,
     pub night_score: usize,
-    rng: rand::rngs::ThreadRng, // Store RNG to avoid repeated allocations
+    pub rng: rand::rngs::ThreadRng,
 }
 
 impl GameState {
-    pub fn new() -> Self {
-        let mut squares = [[SquareColor::Day; GRID_HEIGHT]; GRID_WIDTH];
-        
-        // Initialize field - top half night, bottom half day
-        for x in 0..GRID_WIDTH {
-            for y in 0..HALF_GRID_HEIGHT {
-                squares[x][y] = SquareColor::Night;
+    pub fn new(width: usize, height: usize) -> Self {
+        assert!(width > 0, "width must be positive");
+        assert!(height > 0, "height must be positive");
+
+        let half_height = height / 2;
+        let width_f32 = width as f32;
+        let height_f32 = height as f32;
+
+        let mut squares = vec![vec![SquareColor::Day; height]; width];
+        for column in squares.iter_mut() {
+            for y in 0..half_height {
+                column[y] = SquareColor::Night;
             }
-            // Bottom half is already Day from initialization
         }
+
+        let mut rng = rand::thread_rng();
+        let base_speed = 0.3;
         
-        // Initialize balls - one in each half
+        let left_x = 2.0;
+        let right_x = width_f32 - 2.0;
+        let top_y = 2.0;
+        let bottom_y = height_f32 - 2.0;
+
+        let jitter = std::f32::consts::PI / 6.0;
+        let day_angle = (top_y - bottom_y).atan2(right_x - left_x) + rng.gen_range(-jitter..jitter);
+        let night_angle = (bottom_y - top_y).atan2(left_x - right_x) + rng.gen_range(-jitter..jitter);
+
         let balls = [
             Ball::new(
-                GRID_WIDTH_HALF,
-                GRID_HEIGHT_THREE_QUARTERS,  // Bottom quarter (Day territory)
-                0.3,
-                -0.3,
+                left_x,
+                bottom_y,
+                base_speed * day_angle.cos(),
+                base_speed * day_angle.sin(),
                 SquareColor::Day,
             ),
             Ball::new(
-                GRID_WIDTH_HALF,
-                GRID_HEIGHT_QUARTER,  // Top quarter (Night territory)
-                -0.3,
-                0.3,
+                right_x,
+                top_y,
+                base_speed * night_angle.cos(),
+                base_speed * night_angle.sin(),
                 SquareColor::Night,
             ),
         ];
-        
-        // Count initial scores
-        let day_score = HALF_GRID_HEIGHT * GRID_WIDTH;
-        let night_score = HALF_GRID_HEIGHT * GRID_WIDTH;
-        
+
+        let day_score = half_height * width;
+        let night_score = half_height * width;
+
         GameState {
+            width,
+            height,
+            width_f32,
+            height_f32,
             squares,
             balls,
             day_score,
             night_score,
-            rng: rand::thread_rng(),
+            rng,
         }
     }
-    
+
+    #[inline]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
     #[inline]
     pub fn update(&mut self) {
-        // Update balls
-        for ball in &mut self.balls {
-            ball.update(&mut self.squares, &mut self.rng);
-        }
-        
-        // Count scores - optimize by tracking deltas in the future
-        self.day_score = 0;
-        self.night_score = 0;
-        
-        for x in 0..GRID_WIDTH {
-            for y in 0..GRID_HEIGHT {
-                match self.squares[x][y] {
-                    SquareColor::Day => self.day_score += 1,
-                    SquareColor::Night => self.night_score += 1,
+        let mut new_squares = self.squares.clone();
+        let mut day_score_delta = 0i32;
+        let mut night_score_delta = 0i32;
+
+        let original_balls = self.balls;
+        let mut updated_balls = original_balls;
+
+        for (index, ball) in original_balls.iter().enumerate() {
+            let mut ball_state = *ball;
+
+            if ball_state.x + ball_state.dx >= self.width_f32 - 0.5
+                || ball_state.x + ball_state.dx < 0.5
+            {
+                let nx = if ball.x + ball.dx >= self.width_f32 - 0.5 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let ny = 0.0;
+                let dot_product = ball_state.dx * nx + ball_state.dy * ny;
+                ball_state.dx = ball_state.dx - 2.0 * dot_product * nx;
+                ball_state.dy = ball_state.dy - 2.0 * dot_product * ny;
+            }
+
+            if ball_state.y + ball_state.dy >= self.height_f32 - 0.5
+                || ball_state.y + ball_state.dy < 0.5
+            {
+                let nx = 0.0;
+                let ny = if ball_state.y + ball_state.dy >= self.height_f32 - 0.5 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let dot_product = ball_state.dx * nx + ball_state.dy * ny;
+                ball_state.dx = ball_state.dx - 2.0 * dot_product * nx;
+                ball_state.dy = ball_state.dy - 2.0 * dot_product * ny;
+            }
+
+            const CHECK_OFFSETS: [(f32, f32); 4] =
+                [(0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)];
+
+            for &(offset_x, offset_y) in &CHECK_OFFSETS {
+                let check_x = ball_state.x + offset_x;
+                let check_y = ball_state.y + offset_y;
+
+                if check_x < 0.0 || check_y < 0.0 {
+                    continue;
+                }
+
+                let grid_x = check_x as usize;
+                let grid_y = check_y as usize;
+
+                if grid_x < self.width && grid_y < self.height {
+                    if self.squares[grid_x][grid_y] != ball_state.color_type {
+                        new_squares[grid_x][grid_y] = ball_state.color_type;
+
+                        match ball_state.color_type {
+                            SquareColor::Day => {
+                                day_score_delta += 1;
+                                night_score_delta -= 1;
+                            }
+                            SquareColor::Night => {
+                                night_score_delta += 1;
+                                day_score_delta -= 1;
+                            }
+                        }
+
+                        let (nx, ny) = if offset_x.abs() > offset_y.abs() {
+                            if offset_x > 0.0 {
+                                (-1.0, 0.0)
+                            } else {
+                                (1.0, 0.0)
+                            }
+                        } else if offset_y > 0.0 {
+                            (0.0, -1.0)
+                        } else {
+                            (0.0, 1.0)
+                        };
+
+                        let dot_product = ball_state.dx * nx + ball_state.dy * ny;
+                        ball_state.dx = ball_state.dx - 2.0 * dot_product * nx;
+                        ball_state.dy = ball_state.dy - 2.0 * dot_product * ny;
+
+                        let angle_randomness = self.rng.gen_range(-0.1..0.1);
+                        let speed = (ball_state.dx * ball_state.dx + ball_state.dy * ball_state.dy).sqrt();
+                        let angle = ball_state.dy.atan2(ball_state.dx) + angle_randomness;
+                        ball_state.dx = speed * angle.cos();
+                        ball_state.dy = speed * angle.sin();
+                    }
                 }
             }
+
+            ball_state.x += ball_state.dx;
+            ball_state.y += ball_state.dy;
+
+            ball_state.dx += self.rng.gen_range(-SPEED_RANDOMNESS..SPEED_RANDOMNESS);
+            ball_state.dy += self.rng.gen_range(-SPEED_RANDOMNESS..SPEED_RANDOMNESS);
+
+            ball_state.dx = ball_state.dx.clamp(-MAX_SPEED, MAX_SPEED);
+            ball_state.dy = ball_state.dy.clamp(-MAX_SPEED, MAX_SPEED);
+
+            if ball_state.dx.abs() < MIN_SPEED {
+                ball_state.dx = if ball_state.dx > 0.0 {
+                    MIN_SPEED
+                } else {
+                    -MIN_SPEED
+                };
+            }
+            if ball_state.dy.abs() < MIN_SPEED {
+                ball_state.dy = if ball_state.dy > 0.0 {
+                    MIN_SPEED
+                } else {
+                    -MIN_SPEED
+                };
+            }
+
+            updated_balls[index] = ball_state;
         }
+
+        self.balls = updated_balls;
+        self.squares = new_squares;
+
+        self.day_score = (self.day_score as i32 + day_score_delta).max(0) as usize;
+        self.night_score = (self.night_score as i32 + night_score_delta).max(0) as usize;
     }
 }

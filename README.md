@@ -1,71 +1,40 @@
 # FW16 Pong Wars
 
-A recreation of Pong Wars for the Framework 16 LED Matrix module. Watch as two teams (Day and Night) battle it out in an endless game of territorial pong!
-
-## Features
-
-- **Simulation Mode**: Terminal-based visualization of the game
-- **Live Mode**: Display the game on the physical Framework 16 LED Matrix module
-- Two balls bouncing around claiming territory for their teams
-- Dynamic scoring based on claimed squares
-- System tray support for live mode
+A Rust app that plays Pong Wars on the Framework Laptop 16 LED Matrix over USB serial.
 
 ## Requirements
 
-- Framework 16 laptop with LED Matrix module (for live mode)
-- Rust toolchain
+- At least one Framework LED Matrix Input Module
+- Optional second module for dual-mode (-d, --dualmode)
+- Rust toolchain (stable cargo + rustc)
 
-## Usage
-
-### Simulation Mode (Default)
-```bash
-cargo run
-```
-or explicitly:
-```bash
-cargo run -- simulation
-```
-
-This runs the game in your terminal with ASCII visualization. No LED hardware required.
-
-### Live Mode
-```bash
-cargo run -- live
-```
-
-This mode:
-- Connects to the Framework 16 LED Matrix module
-- Displays the game on the physical LEDs
-- Creates a system tray icon
-- Runs in the background (use system tray to exit)
-
-## Game Rules
-
-- Two balls (Day and Night) bounce around the 9x34 grid
-- When a ball touches a square, it claims it for their team
-- Day squares appear bright, Night squares appear dim
-- Balls bounce off edges and continue endlessly
-- Score is the count of squares each team controls
-
-## Building
+## Run
 
 ```bash
-cargo build --release
+cargo run --release -- [FLAGS]
 ```
 
-## Technical Details
+Flags
 
-- Uses column-based grayscale rendering for the LED Matrix
-- 10 FPS update rate
-- USB Serial communication at 115200 baud
-- Individual pixel brightness control (0-255)
+- `-d`, `--dualmode`  Drive two modules side-by-side (18x34)
+- `-s`, `--speed <1-120>`  Target FPS (default 32). 120 is the observed limit of the LED matrix, but a higher BAUD_RATE does allow higher FPS limits to be set.
+- `-b`, `--brightness <0-100>`  Brightness percent (default 50)
+- `--debug`  Extra timing/log output
 
-## Future Enhancements
+Example
 
-- [ ] Configuration options
-- [ ] Multiple game modes
-- [ ] RGB LED Matrix support
-- [ ] Linux/macOS support
+```bash
+cargo run --release -- --dualmode --speed 48 --brightness 70
+```
+
+Controls
+
+- `Ctrl+C` to exit
+
+Gameplay
+
+- Two balls (Day and Night) bounce and flip tiles to their color
+- Tiles are lit for Day and dark for Night; balls render as the inverse of their color for visibility
 
 ## License
 
@@ -73,5 +42,5 @@ MIT License
 
 ## Acknowledgments
 
-- Original Pong Wars by [Koen van Gilst](https://github.com/vnglst/pong-wars)
-- Framework Computer for the LED Matrix module and documentation
+- Original Pong Wars by Koen van Gilst: https://github.com/vnglst/pong-wars
+- Framework Computer for the LED Matrix hardware and open-source firmware

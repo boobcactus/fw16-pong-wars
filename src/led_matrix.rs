@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use serialport::{DataBits, Parity, SerialPort, StopBits};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
-use crate::game::{GameState, SquareColor, GRID_HEIGHT, GRID_WIDTH};
+use crate::game::{GameState, SquareColor};
 
 const BAUD_RATE: u32 = 115200;
 const TIMEOUT_MS: u64 = 5000;
@@ -13,208 +15,245 @@ const MAGIC_WORD: [u8; 2] = [0x32, 0xAC];
 
 // Command IDs
 const CMD_BRIGHTNESS: u8 = 0x00;
+const CMD_DRAW_BW: u8 = 0x06;
 const CMD_STAGE_GREY_COL: u8 = 0x07;
 const CMD_DRAW_GREY_BUFFER: u8 = 0x08;
 
 // Pre-calculated buffer sizes
-const COLUMN_DATA_SIZE: usize = 4 + GRID_HEIGHT; // Magic(2) + Cmd(1) + ColIdx(1) + Data(34)
 const COMMIT_CMD_SIZE: usize = 4; // Magic(2) + Cmd(1) + Unused(1)
+const MODULE_WIDTH: usize = 9;
+
+// Flow control constants
+const RECOVERY_DELAY_MS: u64 = 2000; // Delay after error before retry
+const MAX_CONSECUTIVE_ERRORS: u32 = 3; // Max errors before reset attempt
+
+struct MatrixPort {
+    port: Box<dyn SerialPort>,
+    #[allow(dead_code)]
+    column_buffer: Vec<u8>,
+    #[allow(dead_code)]
+    commit_buffer: [u8; COMMIT_CMD_SIZE],
+    width: usize,
+    #[allow(dead_code)]
+    last_columns: Vec<Vec<u8>>,
+}
+
+impl MatrixPort {
+    #[allow(unused_mut)]
+    fn new(mut port: Box<dyn SerialPort>, height: usize) -> Result<Self> {
+        if let Err(e) = port.clear(serialport::ClearBuffer::All) {
+            return Err(anyhow!("Failed clearing port: {}", e));
+        }
+        thread::sleep(Duration::from_millis(100));
+
+        let mut column_buffer = Vec::with_capacity(4 + height);
+        column_buffer.extend_from_slice(&MAGIC_WORD);
+        column_buffer.push(CMD_STAGE_GREY_COL);
+        column_buffer.push(0);
+        column_buffer.resize(4 + height, 0);
+
+        let commit_buffer = [MAGIC_WORD[0], MAGIC_WORD[1], CMD_DRAW_GREY_BUFFER, 0x00];
+
+        Ok(MatrixPort {
+            port,
+            column_buffer,
+            commit_buffer,
+            width: MODULE_WIDTH,
+            last_columns: vec![vec![0xEE; height]; MODULE_WIDTH],
+        })
+    }
+}
 
 pub struct LedMatrix {
-    port: Box<dyn SerialPort>,
-    column_buffer: Vec<u8>, // Pre-allocated buffer for column data
-    commit_buffer: [u8; COMMIT_CMD_SIZE], // Static buffer for commit command
+    ports: Vec<MatrixPort>,
+    brightness: Arc<AtomicU8>,
+    consecutive_errors: u32,
+    width: usize,
+    height: usize,
 }
 
 impl LedMatrix {
-    /// Check if the Framework LED Matrix is available without initializing it
-    pub fn check_available() -> Result<()> {
-        let ports = serialport::available_ports()?;
-        
-        ports
-            .iter()
-            .find(|p| {
-                if let serialport::SerialPortType::UsbPort(info) = &p.port_type {
-                    // Framework Computer vendor ID is 0x32AC
-                    // LED Matrix product ID is typically 0x0020 or 0x0021
-                    info.vid == 0x32AC && (info.pid == 0x0020 || info.pid == 0x0021)
-                } else {
-                    false
-                }
-            })
-            .ok_or_else(|| anyhow!("Framework LED Matrix not found."))?;
-        
-        Ok(())
-    }
-    
-    /// Find all Framework LED Matrix devices and return detailed information
-    pub fn find_all_devices() -> Result<Vec<(serialport::SerialPortInfo, String)>> {
-        let ports = serialport::available_ports()?;
-        let mut devices = Vec::new();
-        
-        for port in ports {
-            if let serialport::SerialPortType::UsbPort(info) = &port.port_type {
-                // Framework Computer vendor ID is 0x32AC
-                // LED Matrix product ID is typically 0x0020 or 0x0021
-                if info.vid == 0x32AC && (info.pid == 0x0020 || info.pid == 0x0021) {
-                    let device_info = format!(
-                        "VID: 0x{:04X}, PID: 0x{:04X}, Serial: {}, Manufacturer: {}, Product: {}",
-                        info.vid,
-                        info.pid,
-                        info.serial_number.as_deref().unwrap_or("N/A"),
-                        info.manufacturer.as_deref().unwrap_or("N/A"),
-                        info.product.as_deref().unwrap_or("N/A")
-                    );
-                    devices.push((port.clone(), device_info));
-                }
+    pub fn new_with_brightness(brightness: Arc<AtomicU8>, dual_mode: bool, height: usize) -> Result<Self> {
+        let mut candidates: Vec<serialport::SerialPortInfo> = serialport::available_ports()?
+            .into_iter()
+            .filter(|p| matches!(p.port_type, serialport::SerialPortType::UsbPort(ref info) if info.vid == 0x32AC && (info.pid == 0x0020 || info.pid == 0x0021)))
+            .collect();
+
+        if candidates.is_empty() {
+            return Err(anyhow!("No Framework LED Matrix modules found."));
+        }
+
+        candidates.sort_by(|a, b| a.port_name.cmp(&b.port_name));
+
+        let desired_ports = if dual_mode {
+            if candidates.len() < 2 {
+                return Err(anyhow!("Dual mode requested but only {} LED Matrix module detected.", candidates.len()));
+            }
+            candidates.truncate(2);
+            candidates
+        } else {
+            candidates.truncate(1);
+            candidates
+        };
+
+        let mut matrix_ports: Vec<MatrixPort> = Vec::new();
+        for info in desired_ports {
+            match serialport::new(&info.port_name, BAUD_RATE)
+                .timeout(Duration::from_millis(TIMEOUT_MS))
+                .data_bits(DataBits::Eight)
+                .parity(Parity::None)
+                .stop_bits(StopBits::One)
+                .open()
+            {
+                Ok(port) => match MatrixPort::new(Box::from(port), height) {
+                    Ok(matrix_port) => {
+                        println!("Connected LED Matrix on {}", info.port_name);
+                        matrix_ports.push(matrix_port);
+                    }
+                    Err(e) => eprintln!("Failed initializing port {}: {}", info.port_name, e),
+                },
+                Err(e) => eprintln!("Failed opening port {}: {}", info.port_name, e),
             }
         }
-        
-        Ok(devices)
-    }
-    
-    pub fn new() -> Result<Self> {
-        // Find the Framework LED Matrix port
-        let ports = serialport::available_ports()?;
-        
-        let framework_port = ports
-            .iter()
-            .find(|p| {
-                if let serialport::SerialPortType::UsbPort(info) = &p.port_type {
-                    info.vid == 0x32AC && (info.pid == 0x0020 || info.pid == 0x0021)
-                } else {
-                    false
-                }
-            })
-            .ok_or_else(|| anyhow!("Framework LED Matrix not found. Please ensure the module is connected."))?;
-        
-        println!("Found Framework LED Matrix on port: {}", framework_port.port_name);
-        
-        // Open the port
-        let port = serialport::new(&framework_port.port_name, BAUD_RATE)
-            .timeout(Duration::from_millis(TIMEOUT_MS))
-            .data_bits(DataBits::Eight)
-            .parity(Parity::None)
-            .stop_bits(StopBits::One)
-            .open()?;
-        
-        // Clear input/output buffers
-        port.clear(serialport::ClearBuffer::All)?;
-        
-        // Small delay to let the device settle
-        thread::sleep(Duration::from_millis(100));
-        
-        // Pre-allocate buffers
-        let mut column_buffer = Vec::with_capacity(COLUMN_DATA_SIZE);
-        column_buffer.extend_from_slice(&MAGIC_WORD);
-        column_buffer.push(CMD_STAGE_GREY_COL);
-        column_buffer.push(0); // Column index placeholder
-        column_buffer.resize(COLUMN_DATA_SIZE, 0); // Fill with zeros
-        
-        let commit_buffer = [
-            MAGIC_WORD[0], 
-            MAGIC_WORD[1],
-            CMD_DRAW_GREY_BUFFER,
-            0x00,
-        ];
-        
-        Ok(LedMatrix { 
-            port: Box::from(port),
-            column_buffer,
-            commit_buffer,
+
+        if matrix_ports.is_empty() {
+            return Err(anyhow!("Unable to open any Framework LED Matrix modules."));
+        }
+
+        Ok(LedMatrix {
+            width: matrix_ports.len() * MODULE_WIDTH,
+            height,
+            ports: matrix_ports,
+            brightness,
+            consecutive_errors: 0,
         })
     }
-    
-    pub fn init_display(&mut self) -> Result<()> {
-        // Send initialization sequence
-        self.clear_display()?;
-        self.set_brightness(128)?;
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn reconnect(&mut self) -> Result<()> {
+        println!("Attempting to reconnect to LED Matrix...");
+        
+        thread::sleep(Duration::from_millis(RECOVERY_DELAY_MS));
+
+        let dual_mode = self.ports.len() > 1;
+        let brightness = self.brightness.clone();
+        let new_self = Self::new_with_brightness(brightness, dual_mode, self.height)?;
+
+        *self = new_self;
+
+        println!("Successfully reconnected to LED Matrix");
         Ok(())
     }
-    
+
     #[inline]
-    fn clear_display(&mut self) -> Result<()> {
-        // Use pre-allocated buffer
-        self.column_buffer[3] = 0; // Start with column 0
-        
-        // Clear all brightness values
-        for i in 4..COLUMN_DATA_SIZE {
-            self.column_buffer[i] = 0;
+    pub fn set_brightness(&mut self, brightness: u8) -> Result<()> {
+        self.brightness.store(brightness, Ordering::SeqCst);
+        for (idx, port) in self.ports.iter_mut().enumerate() {
+            let buf = [MAGIC_WORD[0], MAGIC_WORD[1], CMD_BRIGHTNESS, brightness];
+            port
+                .port
+                .write_all(&buf)
+                .map_err(|e| anyhow!("Failed to set brightness on port {}: {}", idx, e))?;
         }
-        
-        // Send all columns with brightness 0
-        for x in 0..9 {
-            self.column_buffer[3] = x as u8;
-            self.port.write_all(&self.column_buffer)?;
-        }
-        
-        self.port.flush()?;
-        
-        // Commit to display
-        self.port.write_all(&self.commit_buffer)?;
-        self.port.flush()?;
-        
         Ok(())
     }
-    
-    #[inline]
-    fn set_brightness(&mut self, brightness: u8) -> Result<()> {
-        // Command: Set brightness (0-255)
-        const BRIGHTNESS_CMD: [u8; 4] = [
-            MAGIC_WORD[0], 
-            MAGIC_WORD[1],
-            CMD_BRIGHTNESS,
-            0, // Brightness placeholder
-        ];
-        
-        let mut cmd = BRIGHTNESS_CMD;
-        cmd[3] = brightness;
-        
-        self.port.write_all(&cmd)?;
-        self.port.flush()?;
-        
-        Ok(())
-    }
-    
+
     #[inline]
     pub fn render(&mut self, game_state: &GameState) -> Result<()> {
-        // Send each column of grayscale data
-        for x in 0..GRID_WIDTH {
-            self.column_buffer[3] = x as u8;  // Column index
-            
-            // Add 34 brightness values for this column
-            for y in 0..GRID_HEIGHT {
-                // Check if ball is at this position
-                let has_ball = game_state.balls.iter()
-                    .any(|ball| (ball.x as usize == x) && (ball.y as usize == y));
-                
-                let brightness = if has_ball {
-                    // Ball brightness depends on the square it's on
-                    match game_state.squares[x][y] {
-                        SquareColor::Day => 0,      // Dark ball on bright square
-                        SquareColor::Night => 255,   // Bright ball on dark square
+        // Attempt render with error recovery
+        match self.render_internal(game_state) {
+            Ok(()) => {
+                self.consecutive_errors = 0;
+                Ok(())
+            }
+            Err(e) => {
+                self.consecutive_errors += 1;
+                eprintln!(
+                    "Render error (#{} consecutive): {}",
+                    self.consecutive_errors, e
+                );
+
+                // If too many consecutive errors, attempt reconnection
+                if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    eprintln!("Too many consecutive errors, attempting device reset...");
+                    match self.reconnect() {
+                        Ok(()) => {
+                            // Try rendering again after successful reconnection
+                            self.render_internal(game_state)
+                        }
+                        Err(reconnect_err) => {
+                            eprintln!("Failed to reconnect: {}", reconnect_err);
+                            Err(reconnect_err)
+                        }
                     }
                 } else {
-                    match game_state.squares[x][y] {
-                        SquareColor::Day => 255,    // Full bright for day (white)
-                        SquareColor::Night => 0,     // Full off for night (black)
-                    }
-                };
-                
-                self.column_buffer[4 + y] = brightness;
+                    // For occasional errors, just wait a bit and continue
+                    thread::sleep(Duration::from_millis(50));
+                    Err(e)
+                }
             }
-            
-            // Send this column
-            self.port.write_all(&self.column_buffer)?;
         }
-        
-        // Flush once after all columns
-        self.port.flush()?;
-        
-        // Commit all columns to display
-        self.port.write_all(&self.commit_buffer)?;
-        self.port.flush()?;
-        
+    }
+
+    #[inline]
+    fn render_internal(&mut self, game_state: &GameState) -> Result<()> {
+        for port_index in 0..self.ports.len() {
+            let port = &mut self.ports[port_index];
+
+            let mut vals = [0u8; 39];
+            for y in 0..self.height {
+                if y >= game_state.height() {
+                    break;
+                }
+                for local_x in 0..port.width {
+                    let global_x = port_index * port.width + local_x;
+                    if global_x >= game_state.width() {
+                        break;
+                    }
+
+                    let square_color = game_state.squares[global_x][y];
+                    let has_ball = game_state
+                        .balls
+                        .iter()
+                        .any(|ball| (ball.x as usize == global_x) && (ball.y as usize == y));
+
+                    let on = match square_color {
+                        SquareColor::Day => !has_ball,
+                        SquareColor::Night => has_ball,
+                    };
+
+                    if on {
+                        let i = local_x + MODULE_WIDTH * y;
+                        let byte = i / 8;
+                        let bit = i % 8;
+                        vals[byte] |= 1u8 << bit;
+                    }
+                }
+            }
+
+            let mut buf = Vec::with_capacity(3 + vals.len());
+            buf.push(MAGIC_WORD[0]);
+            buf.push(MAGIC_WORD[1]);
+            buf.push(CMD_DRAW_BW);
+            buf.extend_from_slice(&vals);
+            port
+                .port
+                .write_all(&buf)
+                .map_err(|e| anyhow!("Failed to write BW frame on port {}: {}", port_index, e))?;
+        }
+
         Ok(())
+    }
+
+    pub fn estimated_max_fps(&self) -> u32 {
+        // Using DrawBW (0x06): 2 magic + 1 cmd + 39 payload = 42 bytes per port per frame
+        let per_port = 2 + 1 + 39;
+        let total = self.ports.len() * per_port;
+        let bytes_per_sec = (BAUD_RATE as f64) / 10.0;
+        let fps = (bytes_per_sec / ((total as f64) * 1.1)).floor() as u32;
+        if fps < 1 { 1 } else { fps }
     }
 }
