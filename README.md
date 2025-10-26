@@ -46,3 +46,4 @@ MIT License
 
 - Original Pong Wars by Koen van Gilst: https://github.com/vnglst/pong-wars
 - Framework Computer for the LED Matrix hardware and open-source firmware
+- Windsurf and OpenAI's GPT-5 enabling me to bring this idea to life  
