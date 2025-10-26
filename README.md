@@ -6,8 +6,8 @@ https://github.com/user-attachments/assets/2d7a4b85-f580-4dbc-9378-3473213b643f
 
 ## Requirements
 
-- At least one Framework LED Matrix Input Module
-- Optional second module for dual-mode (-d, --dualmode)
+- At least one [Framework Laptop 16 LED Matrix](https://frame.work/products/16-led-matrix)
+- Optional second LED Matrix for dual-mode (-d, --dualmode)
 - Rust toolchain (stable cargo + rustc)
 
 ## Run
