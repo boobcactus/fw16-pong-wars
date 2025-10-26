@@ -1,14 +1,3 @@
-# Build artifacts
 /target/
-
-# Debug files
-*.pdb
-
-# IDE specific files
-.vscode/
-.idea/
-*.iml
-
-# OS specific files
+cargo.lock
 .DS_Store
-Thumbs.db
