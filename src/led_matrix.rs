@@ -83,9 +83,24 @@ impl LedMatrix {
             return Err(anyhow!("No Framework LED Matrix modules found."));
         }
 
-        candidates.sort_by(|a, b| a.port_name.cmp(&b.port_name));
+        candidates.sort_by(|a, b| {
+            let sa = match &a.port_type {
+                serialport::SerialPortType::UsbPort(info) => info.serial_number.as_deref(),
+                _ => None,
+            };
+            let sb = match &b.port_type {
+                serialport::SerialPortType::UsbPort(info) => info.serial_number.as_deref(),
+                _ => None,
+            };
+            match (sa, sb) {
+                (Some(aa), Some(bb)) => aa.cmp(bb),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.port_name.cmp(&b.port_name),
+            }
+        });
 
-        let desired_ports = if dual_mode {
+        let mut desired_ports = if dual_mode {
             if candidates.len() < 2 {
                 return Err(anyhow!("Dual mode requested but only {} LED Matrix module detected.", candidates.len()));
             }
@@ -95,6 +110,14 @@ impl LedMatrix {
             candidates.truncate(1);
             candidates
         };
+
+        if dual_mode && desired_ports.len() == 2 {
+            desired_ports.reverse();
+            println!(
+                "Auto-ordered modules: {} = right, {} = left",
+                desired_ports[0].port_name, desired_ports[1].port_name
+            );
+        }
 
         let mut matrix_ports: Vec<MatrixPort> = Vec::new();
         for info in desired_ports {
