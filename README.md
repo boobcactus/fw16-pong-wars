@@ -10,10 +10,10 @@ https://github.com/user-attachments/assets/2d7a4b85-f580-4dbc-9378-3473213b643f
 - Optional second LED Matrix for dual-mode (-d, --dualmode)
 - Rust toolchain (stable cargo + rustc)
 
-## Run
+## Example
 
 ```bash
-cargo run --release -- [FLAGS]
+cargo run -- -d -s 48 -b 4 -B 60
 ```
 
 Flags
@@ -24,12 +24,6 @@ Flags
     - Supports up to 124 FPS by editing [this value](https://github.com/boobcactus/fw16-pong-wars/blob/b246b33519e5e006077fbc7d48cc27122e02981f/src/main.rs#L21), but may lead to instability in the EC.
 - `-B`, `--brightness <0-100>`  Brightness percent (default 50)
 - `--debug`  Extra timing/log output
-
-Example
-
-```bash
-cargo run --release -- --dualmode --speed 48 --brightness 70 --balls 4
-```
 
 ## License
 
