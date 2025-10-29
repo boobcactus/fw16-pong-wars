@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/2d7a4b85-f580-4dbc-9378-3473213b643f
 ## Example
 
 ```bash
-cargo run -- -d -s 48 -b 4 -B 60
+cargo run -- --dualmode --speed 48 --balls 4 --brightness 60
 ```
 
 Flags
