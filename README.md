@@ -1,6 +1,6 @@
    # FW16 Pong Wars
 
-A Rust app that plays Pong Wars on the Framework Laptop 16 LED Matrix over USB serial.
+A Rust app that plays Pong Wars on the Framework Laptop 16 LED Matrix.
 
 https://github.com/user-attachments/assets/2d7a4b85-f580-4dbc-9378-3473213b643f
 
@@ -19,25 +19,17 @@ cargo run --release -- [FLAGS]
 Flags
 
 - `-d`, `--dualmode`  Drive two modules side-by-side (18x34)
+- `-b`, `--balls [1-5]`  Balls per team. Defaults to 2 if no number is provided.
 - `-s`, `--speed <1-64>`  Target FPS (default 64)
     - Supports up to 124 FPS by editing [this value](https://github.com/boobcactus/fw16-pong-wars/blob/b246b33519e5e006077fbc7d48cc27122e02981f/src/main.rs#L21), but may lead to instability in the EC.
-- `-b`, `--brightness <0-100>`  Brightness percent (default 50)
+- `-B`, `--brightness <0-100>`  Brightness percent (default 50)
 - `--debug`  Extra timing/log output
 
 Example
 
 ```bash
-cargo run --release -- --dualmode --speed 48 --brightness 70
+cargo run --release -- --dualmode --speed 48 --brightness 70 --balls 4
 ```
-
-Controls
-
-- `Ctrl+C` to exit
-
-Gameplay
-
-- Two balls (Day and Night) bounce and flip tiles to their color
-- Tiles are lit for Day and dark for Night; balls render as the inverse of their color for visibility
 
 ## License
 
